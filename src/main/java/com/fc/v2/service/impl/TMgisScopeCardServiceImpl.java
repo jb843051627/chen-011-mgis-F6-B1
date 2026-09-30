@@ -28,9 +28,15 @@ import org.springframework.stereotype.Service;
 @Service
 public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper, TMgisScopeCard> implements ITMgisScopeCardService {
 
+    /** 档案情形：1已注销（注销档案名下不得再建新卡） */
+    private static final int UNIT_STATUS_CANCELED = 1;
+
     @Autowired
     private TMgisUnitDocMapper mgisUnitDocMapper;
 
+    /**
+     * 详情口径：只认在库未删的卡。
+     */
     @Override
     public TMgisScopeCard selectTMgisScopeCardById(Long id) {
         return this.baseMapper.selectOne(new QueryWrapper<TMgisScopeCard>()
@@ -38,30 +44,28 @@ public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper,
                 .eq("del_flag", 0));
     }
 
+    /**
+     * 列表口径与详情一炉：只露在库未删的卡，尊重调用方带来的筛选条件
+     * （单号 / 所属档案 / 进展等）；分页由 Controller 的 startPage 统一下发，此处不另开一页。
+     */
     @Override
     public List<TMgisScopeCard> selectTMgisScopeCardList(Wrapper<TMgisScopeCard> queryWrapper) {
-        QueryWrapper<TMgisScopeCard> wrapper = new QueryWrapper<TMgisScopeCard>();
-        com.github.pagehelper.PageHelper.startPage(1, 10);
-        wrapper.eq("status", 0);
+        QueryWrapper<TMgisScopeCard> wrapper = (queryWrapper instanceof QueryWrapper)
+                ? (QueryWrapper<TMgisScopeCard>) queryWrapper
+                : new QueryWrapper<TMgisScopeCard>();
+        wrapper.eq("del_flag", 0);
         return this.baseMapper.selectList(wrapper);
     }
 
     @Override
     public int insertTMgisScopeCard(TMgisScopeCard record) {
-        if (record == null) {
+        if (record == null || record.getSiteId() == null) {
             return 0;
         }
-
-        record.setCreateBy(record.getBillNo());
-        TMgisUnitDoc refArch = mgisUnitDocMapper.selectOne(new QueryWrapper<TMgisUnitDoc>()
-                .eq("id", record.getSiteId()).eq("del_flag", 0));
-        if (refArch == null) {
+        TMgisUnitDoc arch = loadActiveUnit(record.getSiteId());
+        if (arch == null) {
             return 0;
         }
-        if (refArch.getStatus() != null && refArch.getStatus() == 1) {
-            return 0;
-        }
-        record.setSiteNo(refArch.getSiteNo());
         if (StringUtils.isNotEmpty(record.getBillNo())) {
             Integer dupCnt = this.baseMapper.selectCount(new QueryWrapper<TMgisScopeCard>()
                     .eq("bill_no", record.getBillNo()).eq("del_flag", 0));
@@ -69,22 +73,8 @@ public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper,
                 return 0;
             }
         }
-        TMgisUnitDoc bandArch = mgisUnitDocMapper.selectById(record.getSiteId());
-        BigDecimal bandVal = record.getQty();
-        int bandLevel = 0;
-        if (bandVal != null && bandArch != null) {
-            if (bandVal.compareTo(bandArch.getTh1Max()) <= 0) {
-                bandLevel = 1;
-            } else if (bandVal.compareTo(bandArch.getTh2Max()) <= 0) {
-                bandLevel = 2;
-            } else if (bandVal.compareTo(bandArch.getTh3Max()) <= 0) {
-                bandLevel = 3;
-            } else {
-                bandLevel = 4;
-            }
-        }
-        record.setGradeLevel(bandLevel);
-
+        record.setSiteNo(arch.getSiteNo());
+        record.setGradeLevel(Integer.valueOf(gradeOf(arch, record.getQty())));
         record.setDelFlag(0);
         return this.baseMapper.insert(record);
     }
@@ -94,8 +84,13 @@ public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper,
         if (record == null || record.getId() == null) {
             return 0;
         }
+        TMgisScopeCard stored = this.baseMapper.selectOne(new QueryWrapper<TMgisScopeCard>()
+                .eq("id", record.getId()).eq("del_flag", 0));
+        if (stored == null) {
+            return 0;
+        }
 
-        if (record.getId() != null && StringUtils.isNotEmpty(record.getBillNo())) {
+        if (StringUtils.isNotEmpty(record.getBillNo())) {
             Integer dupCnt = this.baseMapper.selectCount(new QueryWrapper<TMgisScopeCard>()
                     .eq("bill_no", record.getBillNo()).ne("id", record.getId()).eq("del_flag", 0));
             if (dupCnt != null && dupCnt > 0) {
@@ -103,20 +98,76 @@ public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper,
             }
         }
 
+        // 挂靠档案：传了就校验新档案并随档案同步编号；没传沿用原档案。
+        // 档案挪一挪（编号变更/改挂）只影响这一处重算，不叫历史卡的其余字段家家地震。
+        Integer siteId = record.getSiteId() == null ? stored.getSiteId() : record.getSiteId();
+        TMgisUnitDoc arch = loadActiveUnit(siteId);
+        if (arch == null) {
+            return 0;
+        }
+        record.setSiteId(siteId);
+        record.setSiteNo(arch.getSiteNo());
+
+        // 折算口径与新增完全一致：未传数量沿用结存数量，档位一律按同一把尺子重算，
+        // 不许新增、修改两处算出两副面孔的层级档。
+        BigDecimal qty = record.getQty() == null ? stored.getQty() : record.getQty();
+        record.setGradeLevel(Integer.valueOf(gradeOf(arch, qty)));
+
         record.setUpdateTime(new Date());
         return this.baseMapper.update(record, new UpdateWrapper<TMgisScopeCard>()
                 .eq("id", record.getId())
                 .eq("del_flag", 0));
     }
 
+    /** 批量软删：只落删除标记，卡与历史台账仍在库里留影 */
     @Override
     public int deleteTMgisScopeCardByIds(String ids) {
         Long[] idArr = ConvertUtil.toLongArray(ids);
-        return this.baseMapper.deleteBatchIds(Arrays.asList(idArr));
+        if (idArr == null || idArr.length == 0) {
+            return 0;
+        }
+        return this.baseMapper.update(null, new UpdateWrapper<TMgisScopeCard>()
+                .in("id", Arrays.asList(idArr))
+                .eq("del_flag", 0)
+                .set("del_flag", 1));
     }
 
     @Override
     public int deleteTMgisScopeCardById(Long id) {
-        return this.baseMapper.deleteById(id);
+        return this.baseMapper.update(null, new UpdateWrapper<TMgisScopeCard>()
+                .eq("id", id)
+                .eq("del_flag", 0)
+                .set("del_flag", 1));
+    }
+
+    /** 取在册（未删、未注销）的挂靠档案；查不到返回 null，调用方拒办 */
+    private TMgisUnitDoc loadActiveUnit(Integer siteId) {
+        TMgisUnitDoc arch = this.mgisUnitDocMapper.selectOne(new QueryWrapper<TMgisUnitDoc>()
+                .eq("id", siteId).eq("del_flag", 0));
+        if (arch == null || (arch.getStatus() != null && arch.getStatus() == UNIT_STATUS_CANCELED)) {
+            return null;
+        }
+        return arch;
+    }
+
+    /**
+     * 挂用类别数折算层级档（与种子口径一致：取值达到上限按高一档，故用小于号）：
+     * 数量 &lt; 一档上限 → 1；&lt; 二档上限 → 2；&lt; 三档上限 → 3；其余 → 4。
+     * 档案未维护的阈值档不参与判档。
+     */
+    private static int gradeOf(TMgisUnitDoc arch, BigDecimal qty) {
+        if (qty == null) {
+            return 0;
+        }
+        if (arch.getTh1Max() != null && qty.compareTo(arch.getTh1Max()) < 0) {
+            return 1;
+        }
+        if (arch.getTh2Max() != null && qty.compareTo(arch.getTh2Max()) < 0) {
+            return 2;
+        }
+        if (arch.getTh3Max() != null && qty.compareTo(arch.getTh3Max()) < 0) {
+            return 3;
+        }
+        return 4;
     }
 }

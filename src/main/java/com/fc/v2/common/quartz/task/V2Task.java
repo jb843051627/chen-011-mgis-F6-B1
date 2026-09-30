@@ -2,10 +2,12 @@ package com.fc.v2.common.quartz.task;
 import cn.hutool.core.date.DateUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fc.v2.model.auto.TSysUser;
+import com.fc.v2.service.ITMgisDutyTaskService;
 import com.fc.v2.service.ITSysUserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -20,12 +22,26 @@ public class V2Task {
 
 	@Autowired
     private ITSysUserService userService;
+
+	@Autowired
+	private ITMgisDutyTaskService mgisDutyTaskService;
+
     /**
      * 无参的任务
      */
     public void runTask1()
     {
         System.out.println("正在执行定时任务，无参方法");
+    }
+
+    /**
+     * 到期提醒派发条目老流程：每个调度周期点一次名，
+     * 在执行时辰窗内、到提醒点、尚未派发的条目照常派发，返回成功条数。
+     */
+    public void runDutyDispatch()
+    {
+        int ok = mgisDutyTaskService.runOnce(new Date());
+        System.out.println("到期提醒派发执行完成，成功条数：" + ok + "，执行时间：" + DateUtil.now());
     }
 
     /**
