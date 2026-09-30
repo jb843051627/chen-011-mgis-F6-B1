@@ -40,9 +40,15 @@ public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper,
 
     @Override
     public List<TMgisScopeCard> selectTMgisScopeCardList(Wrapper<TMgisScopeCard> queryWrapper) {
-        QueryWrapper<TMgisScopeCard> wrapper = new QueryWrapper<TMgisScopeCard>();
-        com.github.pagehelper.PageHelper.startPage(1, 10);
-        wrapper.eq("status", 0);
+        // 清单口径须与详情一致：沿用调用方条件，只补"未删除"过滤；
+        // 分页交给调用方统一 startPage()，这里不得再硬塞一页，也不得只露某一种进展。
+        QueryWrapper<TMgisScopeCard> wrapper;
+        if (queryWrapper instanceof QueryWrapper) {
+            wrapper = (QueryWrapper<TMgisScopeCard>) queryWrapper;
+        } else {
+            wrapper = new QueryWrapper<TMgisScopeCard>();
+        }
+        wrapper.eq("del_flag", 0);
         return this.baseMapper.selectList(wrapper);
     }
 
@@ -69,15 +75,16 @@ public class TMgisScopeCardServiceImpl extends ServiceImpl<TMgisScopeCardMapper,
                 return 0;
             }
         }
-        TMgisUnitDoc bandArch = mgisUnitDocMapper.selectById(record.getSiteId());
+        TMgisUnitDoc bandArch = refArch;
         BigDecimal bandVal = record.getQty();
         int bandLevel = 0;
-        if (bandVal != null && bandArch != null) {
-            if (bandVal.compareTo(bandArch.getTh1Max()) <= 0) {
+        if (bandVal != null) {
+            // 折算口径与质检判定线一致：取值达到本档上限即按高一档，严格小于才留本档；阈值缺档向上越档
+            if (bandArch.getTh1Max() != null && bandVal.compareTo(bandArch.getTh1Max()) < 0) {
                 bandLevel = 1;
-            } else if (bandVal.compareTo(bandArch.getTh2Max()) <= 0) {
+            } else if (bandArch.getTh2Max() != null && bandVal.compareTo(bandArch.getTh2Max()) < 0) {
                 bandLevel = 2;
-            } else if (bandVal.compareTo(bandArch.getTh3Max()) <= 0) {
+            } else if (bandArch.getTh3Max() != null && bandVal.compareTo(bandArch.getTh3Max()) < 0) {
                 bandLevel = 3;
             } else {
                 bandLevel = 4;

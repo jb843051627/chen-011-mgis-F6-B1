@@ -48,6 +48,9 @@ public class TMgisUseBillServiceImpl implements ITMgisUseBillService {
         if (r == null) {
             return null;
         }
+        // 否决须把报批情形落为"已打回"，不得原样空更新
+        r.setStatus(STATUS_VETO);
+        r.setRemark(comment);
         this.mgisUseBillMapper.updateById(r);
         return r;
     }

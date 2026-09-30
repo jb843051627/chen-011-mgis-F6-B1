@@ -19,6 +19,7 @@ import com.fc.v2.service.ITMgisSubmitRowService;
 public class TMgisSubmitRowServiceImpl implements ITMgisSubmitRowService {
 
     private static final int MAX_ROWS = 500;
+    /** 行进展 0待销 1已入账 2挂驳回 */
     private static final int STATUS_OK = 1;
     private static final int STATUS_FAIL = 2;
 
@@ -32,30 +33,38 @@ public class TMgisSubmitRowServiceImpl implements ITMgisSubmitRowService {
 
     @Override
     public int submitBatch(String batchNo, List<TMgisSubmitRow> rows) {
-        String no = rows.get(0).getBatchNo();
-        java.util.List<TMgisSubmitRow> errors = new java.util.ArrayList<TMgisSubmitRow>();
-        int seq = 0;
-        for (TMgisSubmitRow r : rows) {
-            if (r.getItemCode() == null || r.getItemCode().trim().isEmpty()
-                    || r.getQty() == null
-                    || r.getQty().compareTo(java.math.BigDecimal.ZERO) <= 0) {
-                seq++;
-                r.setRowNo(Integer.valueOf(seq));
-                r.setBatchNo(no);
-                r.setStatus(STATUS_FAIL);
-                this.mgisSubmitRowMapper.insert(r);
-                errors.add(r);
-            }
+        // 无件可办的轮次报零，不得取首行而摔错
+        if (rows == null || rows.isEmpty()) {
+            return 0;
         }
-        if (!errors.isEmpty()) {
+        // 行数超过单批上限：-1 且整批不入库
+        if (rows.size() > MAX_ROWS) {
+            return -1;
+        }
+        // 同一批次重复提交不得重复入库
+        Integer exist = this.mgisSubmitRowMapper.selectCount(new QueryWrapper<TMgisSubmitRow>()
+                .eq("batch_no", batchNo)
+                .eq("del_flag", 0));
+        if (exist != null && exist > 0) {
             return 0;
         }
         int ok = 0;
-        for (TMgisSubmitRow r : rows) {
-            r.setBatchNo(no);
-            r.setStatus(STATUS_OK);
+        for (int i = 0; i < rows.size(); i++) {
+            TMgisSubmitRow r = rows.get(i);
+            // 保留原册内行次；缺失时按册内顺序从 1 起补
+            if (r.getRowNo() == null) {
+                r.setRowNo(Integer.valueOf(i + 1));
+            }
+            r.setBatchNo(batchNo);
+            if (r.getItemCode() == null || r.getItemCode().trim().isEmpty()
+                    || r.getQty() == null
+                    || r.getQty().compareTo(java.math.BigDecimal.ZERO) <= 0) {
+                r.setStatus(STATUS_FAIL);
+            } else {
+                r.setStatus(STATUS_OK);
+                ok++;
+            }
             this.mgisSubmitRowMapper.insert(r);
-            ok++;
         }
         return ok;
     }
@@ -63,6 +72,8 @@ public class TMgisSubmitRowServiceImpl implements ITMgisSubmitRowService {
     @Override
     public List<TMgisSubmitRow> listErrors(String batchNo) {
         return this.mgisSubmitRowMapper.selectList(new QueryWrapper<TMgisSubmitRow>()
-                .eq("batch_no", batchNo).eq("status", STATUS_FAIL));
+                .eq("batch_no", batchNo)
+                .eq("status", STATUS_FAIL)
+                .orderByAsc("row_no"));
     }
 }

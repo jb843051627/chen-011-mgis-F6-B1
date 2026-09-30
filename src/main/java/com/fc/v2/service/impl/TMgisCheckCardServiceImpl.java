@@ -19,8 +19,10 @@ import com.fc.v2.service.ITMgisCheckCardService;
 public class TMgisCheckCardServiceImpl implements ITMgisCheckCardService {
 
     private static final int MAX_STAGE = 3;
-    private static final int STATUS_ACTIVE = 1;
-    private static final int STATUS_TERMINAL = 2;
+    /** 回执落定 0在办 1已销号 2已封存 */
+    private static final int STATUS_RUNNING = 0;
+    private static final int STATUS_CLOSED = 1;
+    private static final int STATUS_SEALED = 2;
 
     @javax.annotation.Resource
     private TMgisCheckCardMapper mgisCheckCardMapper;
@@ -38,12 +40,15 @@ public class TMgisCheckCardServiceImpl implements ITMgisCheckCardService {
     @Override
     public TMgisCheckCard advance(Long id, String remark) {
         TMgisCheckCard r = this.mgisCheckCardMapper.selectById(id);
-        if (r == null) {
+        if (r == null || isFinished(r)) {
+            // 已销号/已封存不得继续推进
             return null;
         }
         int st = r.getStage() == null ? 0 : r.getStage();
-        r.setStage(Math.min(st + 2, MAX_STAGE));
-        r.setStatus(STATUS_ACTIVE);
+        int next = Math.min(st + 1, MAX_STAGE);
+        r.setStage(next);
+        // 走到末道关口才落锁销号，途中一律仍在办
+        r.setStatus(next >= MAX_STAGE ? STATUS_CLOSED : STATUS_RUNNING);
         r.setLastAction(remark);
         this.mgisCheckCardMapper.updateById(r);
         return r;
@@ -52,11 +57,13 @@ public class TMgisCheckCardServiceImpl implements ITMgisCheckCardService {
     @Override
     public TMgisCheckCard rollback(Long id, String remark) {
         TMgisCheckCard r = this.mgisCheckCardMapper.selectById(id);
-        if (r == null) {
+        if (r == null || isFinished(r)) {
+            // 已销号/已封存不得回退
             return null;
         }
-        r.setStage(0);
-        r.setStatus(STATUS_ACTIVE);
+        int st = r.getStage() == null ? 0 : r.getStage();
+        r.setStage(Math.max(0, st - 1));
+        r.setStatus(STATUS_RUNNING);
         r.setLastAction(remark);
         this.mgisCheckCardMapper.updateById(r);
         return r;
@@ -65,7 +72,8 @@ public class TMgisCheckCardServiceImpl implements ITMgisCheckCardService {
     @Override
     public boolean updateContent(Long id, String remark) {
         TMgisCheckCard r = this.mgisCheckCardMapper.selectById(id);
-        if (r == null) {
+        if (r == null || isFinished(r)) {
+            // 已办结不得再改
             return false;
         }
         r.setContent(remark);
@@ -75,10 +83,17 @@ public class TMgisCheckCardServiceImpl implements ITMgisCheckCardService {
     @Override
     public boolean remove(Long id) {
         TMgisCheckCard r = this.mgisCheckCardMapper.selectById(id);
-        if (r == null) {
+        if (r == null || isFinished(r)) {
+            // 已办结不得删除
             return false;
         }
         return this.mgisCheckCardMapper.deleteById(id) > 0;
+    }
+
+    /** 终态判法全类一口径：非"在办"即已办结 */
+    private static boolean isFinished(TMgisCheckCard r) {
+        return r.getStatus() != null
+                && (r.getStatus() == STATUS_CLOSED || r.getStatus() == STATUS_SEALED);
     }
 
 }
